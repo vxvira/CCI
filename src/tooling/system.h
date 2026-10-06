@@ -15,7 +15,9 @@ struct Rules {
     int emaLen = 0;                   // longs only above the EMA, shorts only below, 0 off
     int startHour = 0, endHour = 24;  // UTC hours new entries are allowed in
     int flowLen = 0;                  // orderflow window, 0 off
-    double flowMin = 0;               // (buys - sells) / volume over flowLen, signed with the trade
+    double flowMin = -1, flowMax = 1; // (buys - sells) / volume over flowLen, signed with the trade
+    int flowExitLen = 0;              // close at the bar's close once that flow, signed with the trade,
+    double flowExit = 1;              // drops below -flowExit, 0 off
     bool longs = true, shorts = true;
 };
 
@@ -68,6 +70,7 @@ inline std::vector<Fill> runSystem(Indicators& ind, const Rules& r, std::size_t 
     }
     const auto* ema = r.emaLen ? &ind.emaOf(r.emaLen) : nullptr;
     const auto* flow = r.flowLen ? &ind.flowOf(r.flowLen) : nullptr;
+    const auto* flowOut = r.flowExitLen ? &ind.flowOf(r.flowExitLen) : nullptr;
 
     std::vector<Fill> fills;
     int dir = 0; // 1 long, -1 short, 0 flat
@@ -87,6 +90,7 @@ inline std::vector<Fill> runSystem(Indicators& ind, const Rules& r, std::size_t 
             if (dir * (adverse - slPx) <= 0)        exit = dir * b.opens[i] < dir * slPx ? b.opens[i] : slPx;
             else if (dir * (favorable - tpPx) >= 0) exit = dir * b.opens[i] > dir * tpPx ? b.opens[i] : tpPx;
             else if (r.maxBars && i - entryIdx >= (std::size_t)r.maxBars) exit = b.closes[i];
+            else if (flowOut && dir * (*flowOut)[i] < -r.flowExit) exit = b.closes[i];
             else {
                 if (r.be > 0 && dir * (favorable - entry) >= r.tp * r.be) stopDist = std::min(stopDist, 0.0); // from the next bar
                 continue;
@@ -108,7 +112,7 @@ inline std::vector<Fill> runSystem(Indicators& ind, const Rules& r, std::size_t 
         else if (r.shorts && signal[i] < -r.down)    want = -1;
         if (!want) continue;
         if (ema && want * (b.closes[i] - (*ema)[i]) <= 0) continue;
-        if (flow && want * (*flow)[i] < r.flowMin) continue;
+        if (flow && (want * (*flow)[i] < r.flowMin || want * (*flow)[i] > r.flowMax)) continue;
 
         dir = want;
         entry = b.closes[i];
