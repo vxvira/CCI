@@ -34,8 +34,8 @@ int main() {
 
             double cci_average = cci_avg(prices, lengths).back();
 
-            if (cci_average > 150) handler.openLong(bar);
-            // if (cci_average < -150) handler.openShort(bar); (no shorts)
+            if (cci_average > 75) handler.openLong(bar);
+            if (cci_average < -150) handler.openShort(bar); 
 
             if (handler.openTrade->td.profit > tp) handler.closeTrade();
             if (handler.openTrade->td.profit < sl) handler.closeTrade(); 
