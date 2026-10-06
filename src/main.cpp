@@ -16,8 +16,8 @@ int main() {
     const int timeframe = 300;   
     const int batchSize = 500;  
 
-    const int tp = 170;
-    const int sl = -70;
+    int tp = 170;
+    int sl = -70;
 
     const int lengths[] = {5,14,25,40};
 
@@ -36,6 +36,8 @@ int main() {
 
             if (cci_average > 75) handler.openLong(bar);
             if (cci_average < -150) handler.openShort(bar); 
+
+            if (handler.openTrade->td.profit > tp / 2) sl = 0; // b/e halfway to tp
 
             if (handler.openTrade->td.profit > tp) handler.closeTrade();
             if (handler.openTrade->td.profit < sl) handler.closeTrade(); 
