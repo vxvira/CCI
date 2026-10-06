@@ -25,12 +25,11 @@ int main() {
 
     const int lengths[] = {5,14,25,40};
 
-    int barsPassedSinceReset;
-    int barsInDay = 288; // 288 5 minute periods in a day
-
-    double dailyDrawdown;
+    long long day = -1;          // UTC day of the current bar
+    double dailyDrawdown = 0;    // losses so far today, in points (<= 0)
     double maxDrawdown = 140;
     std::vector<double> lossesInDay;
+    std::size_t seenTrades = 0;  // closed trades already checked for losses
 
     int bar = 0;
     for (;;) {
@@ -43,20 +42,19 @@ int main() {
             lows.push_back(window.lows[b]);
             handler.tick(window.tsRecv[b]);
 
-            // get drawdown of day
-            barsPassedSinceReset += 1;
-            if (barsPassedSinceReset >= barsInDay) { 
-                dailyDrawdown = std::accumulate(lossesInDay.begin(), lossesInDay.end(), 0.0);
-                barsPassedSinceReset = 0; 
+            // reset the daily drawdown at each new UTC day
+            if (window.tsRecv[b] / 86400 != day) {
+                day = window.tsRecv[b] / 86400;
                 lossesInDay = {};
+                dailyDrawdown = 0;
             }
 
             if (prices.size() < lengths[3]) continue; // not enough data
-            if (dailyDrawdown >= maxDrawdown) continue; // breached daily drawdown, no new trades
 
             double cci_average = cci_avg(prices, lengths).back();
 
-            if (atr(highs, lows, prices, 14).back() > 2.5) {
+            // no new trades once the daily drawdown is breached, open trades still get managed
+            if (-dailyDrawdown < maxDrawdown && atr(highs, lows, prices, 14).back() > 2.5) {
                 if (cci_average > 75 && handler.openLong(bar)) sl = baseSl;
                 if (cci_average < -150 && handler.openShort(bar)) sl = baseSl;
             }
@@ -68,7 +66,14 @@ int main() {
                 else if (handler.openTrade->td.profit < sl) handler.closeTrade();
             }
 
-            if (trades.size() > 0 && trades.back().profit < 0) lossesInDay.push_back(trades.back().profit);
+            // count each newly closed losing trade once
+            if (trades.size() > seenTrades) {
+                seenTrades = trades.size();
+                if (trades.back().profit < 0) {
+                    lossesInDay.push_back(trades.back().profit);
+                    dailyDrawdown = std::accumulate(lossesInDay.begin(), lossesInDay.end(), 0.0);
+                }
+            }
         }
     }
     handler.closeAll();
