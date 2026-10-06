@@ -5,6 +5,8 @@
 #include "tooling/cci.h"
 
 int main() {
+    std::cout << "Running..." << std::endl;
+
     loadConfig();
 
     std::vector<double> prices;
