@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <numeric>
 
 #include "../vendor/azbacktest/azbacktest.h"
 #include "tooling/cci.h"
@@ -23,6 +24,13 @@ int main() {
 
     const int lengths[] = {5,14,25,40};
 
+    int barsPassedSinceReset;
+    int barsInDay = 288; // 288 5 minute periods in a day
+
+    double dailyDrawdown;
+    double maxDrawdown = 140;
+    std::vector<double> lossesInDay;
+
     int bar = 0;
     for (;;) {
         DataWindow window = handler.requestDataWindow(md, batchSize, timeframe);
@@ -34,7 +42,16 @@ int main() {
             lows.push_back(window.lows[b]);
             handler.tick(window.tsRecv[b]);
 
+            // get drawdown of day
+            barsPassedSinceReset += 1;
+            if (barsPassedSinceReset >= barsInDay) { 
+                dailyDrawdown = std::accumulate(lossesInDay.begin(), lossesInDay.end(), 0.0);
+                barsPassedSinceReset = 0; 
+                lossesInDay = {};
+            }
+
             if (prices.size() < lengths[3]) continue; // not enough data
+            if (dailyDrawdown >= maxDrawdown) continue; // breached daily drawdown, no new trades
 
             double cci_average = cci_avg(prices, lengths).back();
 
@@ -47,6 +64,8 @@ int main() {
 
             if (handler.openTrade->td.profit > tp) handler.closeTrade();
             if (handler.openTrade->td.profit < sl) handler.closeTrade(); 
+
+            if (trades.size() > 0 && trades.back().profit < 0) lossesInDay.push_back(trades.back().profit);
         }
     }
     handler.closeAll();
