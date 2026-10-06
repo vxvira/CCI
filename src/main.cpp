@@ -1,105 +1,98 @@
+#include <cstdio>
 #include <iostream>
+#include <map>
+#include <string>
 #include <vector>
-#include <numeric>
 
 #include "../vendor/azbacktest/azbacktest.h"
 #include "tooling/cci.h"
 #include "tooling/atr.h"
+#include "tooling/bars.h"
+#include "tooling/system.h"
+
+// cumulative $ at the end of every day the range has bars
+std::vector<double> dailyEquity(const std::vector<Fill>& fills, const Bars& b, std::size_t from, std::size_t to) {
+    std::map<long long, double> daily;
+    for (std::size_t i = from; i < to; i++) daily[b.ts[i] / 86400];
+    for (auto& f : fills) daily[f.ts / 86400] += f.pts * 0.50 / 0.25;
+    std::vector<double> curve;
+    double eq = 0;
+    for (auto& [d, p] : daily) curve.push_back(eq += p);
+    return curve;
+}
 
 int main() {
     std::cout << "Running..." << std::endl;
 
     loadConfig();
 
-    std::vector<double> prices;
-    std::vector<double> highs, lows; 
-    MarketData md(kCSVMapping.path);
-    Handling handler(prices, 0.25, 0.50);
+    Bars bars = loadBars(300);
+    Indicators ind(bars);
 
-    const int timeframe = 300;   
-    const int batchSize = 500;  
+    // main as it stood before the optimizer stages
+    const Rules baseline;
 
-    int tp = 170;
-    const int baseSl = -70;
-    int sl = baseSl;
+    // frozen from the train-only stages in src/optimizations, the last 25% was never looked at
+    Rules optimized;
+    optimized.lengths[0] = 8; optimized.lengths[1] = 20; optimized.lengths[2] = 30; optimized.lengths[3] = 60;
+    optimized.up = 50; optimized.down = 200;                       // stage 1, signal.cpp
+    optimized.tp = 180; optimized.sl = 50; optimized.be = 0.75;    // stage 2, exits.cpp
+                                                                   // stage 3, filters.cpp, nothing kept
+    optimized.flowLen = 6; optimized.flowMin = -0.04;              // stage 4, orderflow.cpp
+                                                                   // stage 5, risk.cpp, nothing kept
 
-    const int lengths[] = {5,14,25,40};
+    struct System { const char* name; Rules r; };
+    struct Segment { const char* name; std::size_t from, to; };
+    const System systems[] = {{"baseline", baseline}, {"optimized", optimized}};
+    const Segment segments[] = {{"train", 0, bars.split}, {"test", bars.split, bars.size()}};
 
-    long long day = -1;          // UTC day of the current bar
-    double dailyDrawdown = 0;    // losses so far today, in points (<= 0)
-    double maxDrawdown = 140;
-    std::vector<double> lossesInDay;
-    std::size_t seenTrades = 0;  // closed trades already checked for losses
+    std::printf("\n%-10s %-6s %10s %6s %6s %5s %9s %6s %8s %8s %8s %10s %10s\n", "system", "set", "pnl $",
+                "trades", "win%", "pf", "maxDD $", "sharpe", "avg $", "avgWin $", "avgLoss $", "long $", "short $");
 
-    int bar = 0;
-    for (;;) {
-        DataWindow window = handler.requestDataWindow(md, batchSize, timeframe);
-        if (window.prices.empty()) break;
+    for (auto& seg : segments) {
+        panelManagement::newPanel(std::string("equity ") + seg.name);
+        for (auto& sys : systems) {
+            const auto fills = runSystem(ind, sys.r, seg.from, seg.to);
+            const Summary s = summarize(fills, bars, seg.from, seg.to);
+            const std::string tag = std::string(sys.name) + " " + seg.name + " ";
 
-        for (std::size_t b = 0; b < window.prices.size(); b++, bar++) {
-            prices.push_back(window.prices[b]);
-            highs.push_back(window.highs[b]);
-            lows.push_back(window.lows[b]);
-            handler.tick(window.tsRecv[b]);
+            std::printf("%-10s %-6s %10.2f %6d %5.1f%% %5.2f %9.2f %6.2f %8.2f %8.2f %8.2f %10.2f %10.2f\n",
+                        sys.name, seg.name, s.pnl, s.trades, 100 * s.winRate, s.pf, s.maxDD, s.sharpe,
+                        s.avg, s.avgWin, s.avgLoss, s.longPnl, s.shortPnl);
 
-            // reset the daily drawdown at each new UTC day
-            if (window.tsRecv[b] / 86400 != day) {
-                day = window.tsRecv[b] / 86400;
-                lossesInDay = {};
-                dailyDrawdown = 0;
-            }
+            addStat(tag + "PnL $", s.pnl);
+            addStat(tag + "trades", s.trades);
+            addStat(tag + "WR", s.winRate);
+            addStat(tag + "profit factor", s.pf);
+            addStat(tag + "max drawdown $", s.maxDD);
+            addStat(tag + "sharpe (daily, ann.)", s.sharpe);
+            addStat(tag + "avg PnL / trade $", s.avg);
+            addStat(tag + "avg win $", s.avgWin);
+            addStat(tag + "avg loss $", s.avgLoss);
+            addStat(tag + "long PnL $", s.longPnl);
+            addStat(tag + "short PnL $", s.shortPnl);
+            addStat(tag + "trades / day", s.days ? (double)s.trades / s.days : 0);
 
-            if (prices.size() < lengths[3]) continue; // not enough data
+            const auto curve = dailyEquity(fills, bars, seg.from, seg.to);
+            addLine(tag + "equity", curve);
+            newLineSeries(std::string("equity ") + seg.name, sys.name, curve);
 
-            double cci_average = cci_avg(prices, lengths).back();
+            if (&sys != &systems[1] || &seg != &segments[1]) continue;
 
-            // no new trades once the daily drawdown is breached, open trades still get managed
-            if (-dailyDrawdown < maxDrawdown && atr(highs, lows, prices, 14).back() > 2.5) {
-                if (cci_average > 75 && handler.openLong(bar)) sl = baseSl;
-                if (cci_average < -150 && handler.openShort(bar)) sl = baseSl;
-            }
-
-            if (handler.openTrade) {
-                if (handler.openTrade->td.profit > tp / 2) sl = 0; // b/e halfway to tp
-
-                if (handler.openTrade->td.profit > tp) handler.closeTrade();
-                else if (handler.openTrade->td.profit < sl) handler.closeTrade();
-            }
-
-            // count each newly closed losing trade once
-            if (trades.size() > seenTrades) {
-                seenTrades = trades.size();
-                if (trades.back().profit < 0) {
-                    lossesInDay.push_back(trades.back().profit);
-                    dailyDrawdown = std::accumulate(lossesInDay.begin(), lossesInDay.end(), 0.0);
-                }
-            }
+            // monte carlo (daily bucketed) of the optimized system out of sample, in $
+            trades.clear();
+            for (auto& f : fills) trades.push_back({f.pts * 0.50 / 0.25, f.pts > 0, f.ts});
+            const int mcSims = 60;
+            auto mcPaths  = returnMonteCarlo(mcSims, 5, 86400);
+            auto pctPaths = returnPercentilePaths(mcPaths, {5, 50, 95});
+            addLine("mc cloud", mcPaths, {}, RGBA{0.4f, 0.4f, 0.4f, 0.3f});
+            const char* names[] = {"mc p5", "mc p50", "mc p95"};
+            for (std::size_t i = 0; i < pctPaths.size(); i++)
+                newLineSeries("equity test", names[i], pctPaths[i]);
         }
     }
-    handler.closeAll();
 
-    // monte carlo (daily bucketed)
-    const int mcSims = 60;
-    auto mcPaths  = returnMonteCarlo(mcSims, 5, 86400);
-    auto pctPaths = returnPercentilePaths(mcPaths, {5, 50, 95});
-    auto profit   = returnCumProfitBucketed(86400);
-
-    std::vector<std::vector<double>> mainPaths;
-    mainPaths.push_back(profit);
-    for (auto& p : pctPaths) mainPaths.push_back(std::move(p));
-
-    addLine("mc cloud", mcPaths, {}, RGBA{0.4f, 0.4f, 0.4f, 0.3f});
-    addLine("equity + percentiles", mainPaths,
-        {"actual", "p5", "p50", "p95"}, RGBA{0.5f, 0.8f, 0.5f, 1.0f});
-
-    addStat("WR", returnWinrate());
-    addStat("Total profit", returnCumProfit());
-    addStat("Average PnL / trade", returnAvgPnl());
-
-    panelManagement::newPanel("equity");
-    const char* names[] = {"actual", "p5", "p50", "p95"};
-    for (std::size_t i = 0; i < mainPaths.size(); i++)
-        newLineSeries("equity", names[i], mainPaths[i]);
+    std::fflush(stdout); // the window loop below never returns
 
     widgetManagement::newWindow("stats");
     widgetManagement::Widget stats{widgetManagement::StatisticExplorer, "Statistic Explorer"};
@@ -107,9 +100,10 @@ int main() {
     widgetManagement::findWindow("stats")->children.push_back(stats);
 
     setTiling(true);
-    setTileGrid(4, 1);
-    tileWindow("panel_equity", 0, 0, 3, 1);
-    tileWindow("widget_stats", 3, 0);
+    setTileGrid(4, 2);
+    tileWindow("panel_equity train", 0, 0, 3, 1);
+    tileWindow("panel_equity test", 0, 1, 3, 1);
+    tileWindow("widget_stats", 3, 0, 1, 2);
 
     showConsole("Console", skins::gilded);
 }
