@@ -3,6 +3,7 @@
 
 #include "../vendor/azbacktest/azbacktest.h"
 #include "tooling/cci.h"
+#include "tooling/atr.h"
 
 int main() {
     std::cout << "Running..." << std::endl;
@@ -10,6 +11,7 @@ int main() {
     loadConfig();
 
     std::vector<double> prices;
+    std::vector<double> highs, lows; 
     MarketData md(kCSVMapping.path);
     Handling handler(prices, 0.25, 0.50);
 
@@ -28,14 +30,18 @@ int main() {
 
         for (std::size_t b = 0; b < window.prices.size(); b++, bar++) {
             prices.push_back(window.prices[b]);
+            highs.push_back(window.highs[b]);
+            lows.push_back(window.lows[b]);
             handler.tick(window.tsRecv[b]);
 
             if (prices.size() < lengths[3]) continue; // not enough data
 
             double cci_average = cci_avg(prices, lengths).back();
 
-            if (cci_average > 75) handler.openLong(bar);
-            if (cci_average < -150) handler.openShort(bar); 
+            if (atr(highs, lows, prices, 14).back() > 2.5) {
+                if (cci_average > 75) handler.openLong(bar);
+                if (cci_average < -150) handler.openShort(bar); 
+            }
 
             if (handler.openTrade->td.profit > tp / 2) sl = 0; // b/e halfway to tp
 
