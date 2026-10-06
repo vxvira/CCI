@@ -20,7 +20,8 @@ int main() {
     const int batchSize = 500;  
 
     int tp = 170;
-    int sl = -70;
+    const int baseSl = -70;
+    int sl = baseSl;
 
     const int lengths[] = {5,14,25,40};
 
@@ -56,8 +57,8 @@ int main() {
             double cci_average = cci_avg(prices, lengths).back();
 
             if (atr(highs, lows, prices, 14).back() > 2.5) {
-                if (cci_average > 75) handler.openLong(bar);
-                if (cci_average < -150) handler.openShort(bar); 
+                if (cci_average > 75 && handler.openLong(bar)) sl = baseSl;
+                if (cci_average < -150 && handler.openShort(bar)) sl = baseSl;
             }
 
             if (handler.openTrade) {
