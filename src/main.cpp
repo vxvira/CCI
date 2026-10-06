@@ -60,10 +60,12 @@ int main() {
                 if (cci_average < -150) handler.openShort(bar); 
             }
 
-            if (handler.openTrade->td.profit > tp / 2) sl = 0; // b/e halfway to tp
+            if (handler.openTrade) {
+                if (handler.openTrade->td.profit > tp / 2) sl = 0; // b/e halfway to tp
 
-            if (handler.openTrade->td.profit > tp) handler.closeTrade();
-            if (handler.openTrade->td.profit < sl) handler.closeTrade(); 
+                if (handler.openTrade->td.profit > tp) handler.closeTrade();
+                else if (handler.openTrade->td.profit < sl) handler.closeTrade();
+            }
 
             if (trades.size() > 0 && trades.back().profit < 0) lossesInDay.push_back(trades.back().profit);
         }
